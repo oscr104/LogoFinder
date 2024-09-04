@@ -8,7 +8,7 @@ import numpy.typing as npt
 import matplotlib.pyplot as plt
 import os
 from torch import Tensor
-from typing import Tuple
+from typing import List, Tuple
 
 HOME = os.getcwd()
 CONFIG_PATH = os.path.join(
@@ -55,21 +55,28 @@ def detect_logos(
 
 def sub_image_matcher(
     ref_img: npt.NDArray = None, img: npt.NDArray = None, min_match_count: int = 10
-)-> None:
+) -> bool:
+    """
+    Using SIFT detector to compare single image to reference image and return True/False, plotting results
+
+    Inputs:
+        ref_img - reference image, 8 bit greyscale
+        img - image to match, 8 bit greyscale
+        min_match_count - minimum number of matching keypoints to declare a match
+    Output:
+        img_match -  True if img matches ref_img, otherwise False
+    """
     # Initiate SIFT detector
     sift = cv.SIFT_create()
-
     # find the keypoints and descriptors with SIFT
     kp1, des1 = sift.detectAndCompute(ref_img, None)
     kp2, des2 = sift.detectAndCompute(img, None)
     FLANN_INDEX_KDTREE = 1
     index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
     search_params = dict(checks=50)
-
     flann = cv.FlannBasedMatcher(index_params, search_params)
     matches = flann.knnMatch(des1, des2, k=2)
-
-    # store all the good matches as per Lowe's ratio test.
+    # store good matches as per Lowe's ratio test.
     good = []
     for m, n in matches:
         if m.distance < 0.7 * n.distance:
@@ -79,10 +86,8 @@ def sub_image_matcher(
         print("Matches found - {}/{}".format(len(good), min_match_count))
         src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
         dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-
         M, mask = cv.findHomography(src_pts, dst_pts, cv.RANSAC, 5.0)
         matchesMask = mask.ravel().tolist()
-
         h, w = ref_img.shape
         pts = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(
             -1, 1, 2
@@ -90,11 +95,12 @@ def sub_image_matcher(
         dst = cv.perspectiveTransform(pts, M)
         img = cv.polylines(img, [np.int32(dst)], True, 255, 3, cv.LINE_AA)
         line_color = (0, 255, 0)
-
+        img_match = True
     else:
         print("Not enough matches are found - {}/{}".format(len(good), min_match_count))
         matchesMask = None
         line_color = (255, 0, 0)
+        img_match = False
 
     draw_params = dict(
         matchColor=line_color,
@@ -102,11 +108,11 @@ def sub_image_matcher(
         matchesMask=matchesMask,
         flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
     )
-
     plot_img = cv.drawMatches(ref_img, kp1, img, kp2, good, None, **draw_params)
     plt.imshow(plot_img, "gray")
     plt.axis("off")
     plt.show()
+    return img_match
 
 
 def bb_to_pxls(bb: npt.NDArray = None, i_w: int = None, i_h: int = None):
@@ -121,7 +127,9 @@ def bb_to_pxls(bb: npt.NDArray = None, i_w: int = None, i_h: int = None):
     return bb_out
 
 
-def compare_logos(ref_img_path: str = None, img_path: str = None, boxes=None) -> None:
+def compare_logos(
+    ref_img_path: str = None, img_path: str = None, boxes=None
+) -> List[List]:
     ref = cv.imread(ref_img_path, cv.IMREAD_GRAYSCALE)
     ref = cv.normalize(ref, None, 0, 255, cv.NORM_MINMAX).astype("uint8")
     img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
@@ -129,11 +137,15 @@ def compare_logos(ref_img_path: str = None, img_path: str = None, boxes=None) ->
     i_h, i_w = img.shape
     source_image = Image.fromarray(img)
     boxes_xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy")
+    matches = []
     for box in boxes_xyxy:
         pxl_box = bb_to_pxls(box.tolist(), i_w, i_h)
         sub_img = source_image.crop(pxl_box)
         sub_img = np.array(sub_img)
-        sub_image_matcher(ref_img=ref, img=sub_img)
+        img_match = sub_image_matcher(ref_img=ref, img=sub_img)
+        if img_match:
+            matches.append(box.tolist())
+    return matches
 
 
 def load_gd():
@@ -149,6 +161,7 @@ def find_in_image(
     reference_path: str = None,
     gd_model=None,
     gd_threshold: float = 0.3,
+    gd_prompt: str = "logo",
 ) -> None:
     """
     Wrapper function to detect logos and attempt to match them to reference image
@@ -160,6 +173,9 @@ def find_in_image(
         gd_threshold - minimum confidence score for GD predictions
     """
     boxes, _, _ = detect_logos(
-        gd_model=gd_model, img_path=image_path, box_threshold=gd_threshold
+        gd_model=gd_model,
+        img_path=image_path,
+        box_threshold=gd_threshold,
+        text_prompt=gd_prompt,
     )
-    compare_logos(reference_path, image_path, boxes)
+    matching_objects = compare_logos(reference_path, image_path, boxes)
