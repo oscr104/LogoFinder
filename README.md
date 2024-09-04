@@ -10,7 +10,6 @@ git clone https://github.com/oscr104/LogoFinder.git
 cd LogoFinder
 conda create --name LogoFinder python=3.12
 conda activate LogoFinder
-git clone https://github.com/IDEA-Research/GroundingDINO.git
 cd GroundingDINO
 pip install -q -e .
 mkdir weights
